@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# check_port.sh - check if a specific TCP port is open on a remote host
+# Usage: ./check_port.sh <host> <port> [timeout_seconds] [log_dir]
+# Example: ./check_port.sh example.com 22 3 /home/user/port_logs
+
+set -euo pipefail
+
+HOST="${1:-}"
+PORT="${2:-}"
+TIMEOUT="${3:-3}"
+LOG_DIR="${4:-/var/log/port_check}"   # default log dir (may need sudo to create)
+TIMESTAMP="$(date '+%F %T %z')"
+OUTCOME=""
+EXIT_CODE=1
+
+if [[ -z "$HOST" || -z "$PORT" ]]; then
+  echo "Usage: $0 <host> <port> [timeout_seconds] [log_dir]"
+  exit 2
+fi
+
+# Ensure log dir exists (create with user perms if possible)
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+LOG_FILE="$LOG_DIR/portcheck_$(date +%F).log"
+
+# Try /dev/tcp method (bash builtin) with timeout wrapper if available
+try_dev_tcp() {
+  # uses bash's /dev/tcp; not all shells support it
+  if timeout "$TIMEOUT" bash -c ">/dev/tcp/$HOST/$PORT" 2>/dev/null; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# Try netcat (nc) if available
+try_nc() {
+  if command -v nc >/dev/null 2>&1; then
+    # -z: zero-I/O (scan), -w: timeout (seconds). Use -G on some BSD nc versions? we keep portable flags.
+    if nc -z -w "$TIMEOUT" "$HOST" "$PORT" >/dev/null 2>&1; then
+      return 0
+    else
+      return 1
+    fi
+  fi
+  return 2
+}
+
+# Try socat fallback (if installed)
+try_socat() {
+  if command -v socat >/dev/null 2>&1; then
+    if timeout "$TIMEOUT" socat - TCP:"$HOST":"$PORT",connect-timeout="$TIMEOUT" >/dev/null 2>&1; then
+      return 0
+    else
+      return 1
+    fi
+  fi
+  return 2
+}
+
+# Try python small socket test if available
+try_python() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - <<PYCODE
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.settimeout($TIMEOUT)
+try:
+    s.connect(("$HOST", int($PORT)))
+    s.close()
+    sys.exit(0)
+except:
+    sys.exit(1)
+PYCODE
+    return $?
+  fi
+  return 2
+}
+
+# Order: /dev/tcp -> nc -> socat -> python
+if try_dev_tcp; then
+  OUTCOME="OPEN"
+  EXIT_CODE=0
+else
+  nc_rc=$(try_nc || echo $?)
+  if [[ "$nc_rc" == "0" ]]; then
+    OUTCOME="OPEN"
+    EXIT_CODE=0
+  else
+    socat_rc=$(try_socat || echo $?)
+    if [[ "$socat_rc" == "0" ]]; then
+      OUTCOME="OPEN"
+      EXIT_CODE=0
+    else
+      py_rc=$(try_python || echo $?)
+      if [[ "$py_rc" == "0" ]]; then
+        OUTCOME="OPEN"
+        EXIT_CODE=0
+      else
+        OUTCOME="CLOSED"
+        EXIT_CODE=1
+      fi
+    fi
+  fi
+fi
+
+# Print to stdout
+echo "[$TIMESTAMP] Host: $HOST Port: $PORT -> $OUTCOME (timeout=${TIMEOUT}s)"
+
+# Append to log
+echo "[$TIMESTAMP] Host: $HOST Port: $PORT -> $OUTCOME (timeout=${TIMEOUT}s)" >> "$LOG_FILE"
+
+exit $EXIT_CODE
