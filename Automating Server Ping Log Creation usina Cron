@@ -1,0 +1,31 @@
+#!/bin/bash
+# ping_log_cron.sh
+# Script to ping multiple servers and log results (for cron automation)
+
+SERVER_LIST="/home/$USER/servers.txt"     # List of servers
+LOG_DIR="/home/$USER/ping_logs"           # Directory for logs
+LOG_FILE="$LOG_DIR/ping_$(date +%F_%H-%M).log"
+
+# Create log directory if not exists
+mkdir -p "$LOG_DIR"
+
+echo "===================================" >> "$LOG_FILE"
+echo "Server Ping Report - $(date)" >> "$LOG_FILE"
+echo "===================================" >> "$LOG_FILE"
+
+# Loop through each server
+while read -r server
+do
+    if [ -n "$server" ]; then
+        ping -c 2 "$server" &> /dev/null
+        if [ $? -eq 0 ]; then
+            echo "$server - UP ✅" >> "$LOG_FILE"
+        else
+            echo "$server - DOWN ❌" >> "$LOG_FILE"
+        fi
+    fi
+done < "$SERVER_LIST"
+
+echo "-----------------------------------" >> "$LOG_FILE"
+echo "Ping check completed at $(date)" >> "$LOG_FILE"
+echo "===================================" >> "$LOG_FILE"
